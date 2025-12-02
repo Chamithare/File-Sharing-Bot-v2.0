@@ -8,14 +8,7 @@ from config import FORCE_SUB_CHANNELS, ADMINS, FORCE_SUB_MESSAGE, LOGGER
 from database.database import db
 
 async def is_subscribed(client, user_id):
-    """
-    Check if user is subscribed to ALL force-sub channels
-    Returns: (bool, list of channels not joined)
-    """
-    # Get force sub channels from database (dynamic)
     db_channels = await db.get_force_sub_channels()
-    
-    # Combine with config channels
     all_channels = list(set(FORCE_SUB_CHANNELS + db_channels))
     
     if not all_channels or all_channels == [0]:
@@ -37,10 +30,6 @@ async def is_subscribed(client, user_id):
     return len(not_joined) == 0, not_joined
 
 async def get_invite_links(client, channel_ids):
-    """
-    Get invite links for multiple channels
-    Returns: list of (channel_name, invite_link) tuples
-    """
     links = []
     for channel_id in channel_ids:
         try:
@@ -54,28 +43,20 @@ async def get_invite_links(client, channel_ids):
     return links
 
 async def handle_force_sub(client, message: Message):
-    """
-    Handle force subscribe check and send appropriate message
-    Returns: True if subscribed, False if not
-    """
     user_id = message.from_user.id
     subscribed, not_joined = await is_subscribed(client, user_id)
     
     if subscribed:
         return True
     
-    # Get invite links for channels not joined
     invite_links = await get_invite_links(client, not_joined)
     
-    # Create buttons for each channel
     buttons = []
     for idx, (channel_name, invite_link) in enumerate(invite_links, 1):
         buttons.append([InlineKeyboardButton(f"📢 Join {channel_name}", url=invite_link)])
     
-    # Add "Try Again" button
     buttons.append([InlineKeyboardButton("🔄 Try Again", url=f"https://t.me/{client.username}?start=start")])
     
-    # Send force sub message
     text = FORCE_SUB_MESSAGE.format(
         first=message.from_user.first_name,
         last=message.from_user.last_name or "",
@@ -93,20 +74,17 @@ async def handle_force_sub(client, message: Message):
     return False
 
 def encode(string):
-    """Encode string to base64"""
     string_bytes = string.encode("ascii")
     base64_bytes = base64.urlsafe_b64encode(string_bytes)
     return base64_bytes.decode("ascii").strip("=")
 
 def decode(base64_string):
-    """Decode base64 string"""
     base64_string = base64_string.strip("=")
     base64_bytes = (base64_string + "=" * (-len(base64_string) % 4)).encode("ascii")
     string_bytes = base64.urlsafe_b64decode(base64_bytes) 
     return string_bytes.decode("ascii")
 
 async def get_messages(client, message_ids):
-    """Get multiple messages"""
     messages = []
     total_messages = 0
     while total_messages != len(message_ids):
@@ -126,7 +104,6 @@ async def get_messages(client, message_ids):
     return messages
 
 def get_readable_time(seconds: int) -> str:
-    """Convert seconds to readable time format"""
     result = ''
     (days, remainder) = divmod(seconds, 86400)
     days = int(days)
@@ -145,33 +122,6 @@ def get_readable_time(seconds: int) -> str:
     return result
 
 def is_admin_filter():
-    """Filter to check if user is admin"""
     async def func(flt, client, message: Message):
         return message.from_user.id in ADMINS
     return filters.create(func)
-```
-
----
-
-**Just copy this entire code block and save it as `helper_func.py` in your project root!** 
-
-Your structure should be:
-```
-Your-Project/
-├── helper_func.py  ← THIS FILE
-├── bot.py
-├── config.py
-├── requirements.txt
-├── Procfile
-├── runtime.txt
-├── nixpacks.toml
-├── database/
-│   ├── __init__.py
-│   └── database.py
-└── plugins/
-    ├── __init__.py
-    ├── start.py
-    ├── channel_post.py
-    ├── admin_panel.py
-    ├── batch.py
-    └── broadcast.py
