@@ -6,24 +6,18 @@ from config import CHANNEL_ID, MOVIE_CHANNEL_ID, ADMINS, DISABLE_CHANNEL_BUTTON,
 from helper_func import encode
 import asyncio
 
-# Handle posts in SHORT database channel (auto-delete category)
-@Client.on_message(filters.channel & filters.chat(CHANNEL_ID) & ~filters.edited)
+@Client.on_message(filters.channel & filters.chat(CHANNEL_ID))
 async def handle_short_channel_post(client: Client, message: Message):
-    """Handle posts in SHORT database channel - auto-delete category"""
     try:
-        # Store file with "short" category
         await db.add_file(message.id, message.id, category="short")
         
-        # Generate shareable link
         base64_string = encode(f"{message.id}")
         link = f"https://t.me/{client.username}?start={base64_string}"
         
-        # Create reply markup
         reply_markup = InlineKeyboardMarkup(
             [[InlineKeyboardButton("🔗 Share Link", url=f'https://t.me/share/url?url={link}')]]
         ) if not DISABLE_CHANNEL_BUTTON else None
         
-        # Reply with link in the channel
         await message.reply_text(
             text=f"📦 **Short File Link (Auto-Delete)**\n\n"
                  f"🔗 Link: `{link}`\n\n"
@@ -41,24 +35,18 @@ async def handle_short_channel_post(client: Client, message: Message):
     except Exception as e:
         LOGGER(__name__).error(f"Error in short channel handler: {e}")
 
-# Handle posts in MOVIE database channel (permanent category)
-@Client.on_message(filters.channel & filters.chat(MOVIE_CHANNEL_ID) & ~filters.edited)
+@Client.on_message(filters.channel & filters.chat(MOVIE_CHANNEL_ID))
 async def handle_movie_channel_post(client: Client, message: Message):
-    """Handle posts in MOVIE database channel - permanent category"""
     try:
-        # Store file with "movie" category (permanent)
         await db.add_file(message.id, message.id, category="movie")
         
-        # Generate shareable link
         base64_string = encode(f"{message.id}")
         link = f"https://t.me/{client.username}?start={base64_string}"
         
-        # Create reply markup
         reply_markup = InlineKeyboardMarkup(
             [[InlineKeyboardButton("🔗 Share Link", url=f'https://t.me/share/url?url={link}')]]
         ) if not DISABLE_CHANNEL_BUTTON else None
         
-        # Reply with link in the channel
         await message.reply_text(
             text=f"🎬 **Movie File Link (Permanent)**\n\n"
                  f"🔗 Link: `{link}`\n\n"
@@ -76,22 +64,16 @@ async def handle_movie_channel_post(client: Client, message: Message):
     except Exception as e:
         LOGGER(__name__).error(f"Error in movie channel handler: {e}")
 
-# Handle direct messages to bot (forward to SHORT channel)
 @Client.on_message(filters.private & filters.create(lambda _, __, m: m.from_user.id in ADMINS) & (filters.document | filters.video | filters.audio))
 async def handle_direct_upload(client: Client, message: Message):
-    """Handle files sent directly to bot - forward to SHORT channel"""
     try:
-        # Forward to SHORT database channel
         forwarded = await message.forward(CHANNEL_ID)
         
-        # Store with "short" category
         await db.add_file(forwarded.id, forwarded.id, category="short")
         
-        # Generate link
         base64_string = encode(f"{forwarded.id}")
         link = f"https://t.me/{client.username}?start={base64_string}"
         
-        # Reply to admin
         reply_markup = InlineKeyboardMarkup(
             [[InlineKeyboardButton("🔗 Share Link", url=f'https://t.me/share/url?url={link}')]]
         ) if not DISABLE_CHANNEL_BUTTON else None
