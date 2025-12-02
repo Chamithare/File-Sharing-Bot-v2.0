@@ -1,119 +1,177 @@
 import base64
 import re
 import asyncio
-import logging 
 from pyrogram import filters
-from pyrogram.enums import ChatMemberStatus
-from config import FORCE_SUB_CHANNEL, ADMINS, AUTO_DELETE_TIME, AUTO_DEL_SUCCESS_MSG
-from pyrogram.errors.exceptions.bad_request_400 import UserNotParticipant
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, UserNotParticipant
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from config import FORCE_SUB_CHANNELS, ADMINS, FORCE_SUB_MESSAGE, LOGGER
+from database.database import db
 
-async def is_subscribed(filter, client, update):
-    if not FORCE_SUB_CHANNEL:
-        return True
-    user_id = update.from_user.id
-    if user_id in ADMINS:
-        return True
-    try:
-        member = await client.get_chat_member(chat_id = FORCE_SUB_CHANNEL, user_id = user_id)
-    except UserNotParticipant:
-        return False
+async def is_subscribed(client, user_id):
+    """
+    Check if user is subscribed to ALL force-sub channels
+    Returns: (bool, list of channels not joined)
+    """
+    # Get force sub channels from database (dynamic)
+    db_channels = await db.get_force_sub_channels()
+    
+    # Combine with config channels
+    all_channels = list(set(FORCE_SUB_CHANNELS + db_channels))
+    
+    if not all_channels or all_channels == [0]:
+        return True, []
+    
+    not_joined = []
+    
+    for channel_id in all_channels:
+        try:
+            member = await client.get_chat_member(chat_id=channel_id, user_id=user_id)
+            if member.status == "kicked":
+                not_joined.append(channel_id)
+        except UserNotParticipant:
+            not_joined.append(channel_id)
+        except Exception as e:
+            LOGGER(__name__).error(f"Error checking subscription for channel {channel_id}: {e}")
+            not_joined.append(channel_id)
+    
+    return len(not_joined) == 0, not_joined
 
-    if not member.status in [ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER]:
-        return False
-    else:
-        return True
+async def get_invite_links(client, channel_ids):
+    """
+    Get invite links for multiple channels
+    Returns: list of (channel_name, invite_link) tuples
+    """
+    links = []
+    for channel_id in channel_ids:
+        try:
+            chat = await client.get_chat(channel_id)
+            invite_link = chat.invite_link
+            if not invite_link:
+                invite_link = await client.export_chat_invite_link(channel_id)
+            links.append((chat.title, invite_link))
+        except Exception as e:
+            LOGGER(__name__).error(f"Error getting invite link for {channel_id}: {e}")
+    return links
 
-async def encode(string):
+async def handle_force_sub(client, message: Message):
+    """
+    Handle force subscribe check and send appropriate message
+    Returns: True if subscribed, False if not
+    """
+    user_id = message.from_user.id
+    subscribed, not_joined = await is_subscribed(client, user_id)
+    
+    if subscribed:
+        return True
+    
+    # Get invite links for channels not joined
+    invite_links = await get_invite_links(client, not_joined)
+    
+    # Create buttons for each channel
+    buttons = []
+    for idx, (channel_name, invite_link) in enumerate(invite_links, 1):
+        buttons.append([InlineKeyboardButton(f"📢 Join {channel_name}", url=invite_link)])
+    
+    # Add "Try Again" button
+    buttons.append([InlineKeyboardButton("🔄 Try Again", url=f"https://t.me/{client.username}?start=start")])
+    
+    # Send force sub message
+    text = FORCE_SUB_MESSAGE.format(
+        first=message.from_user.first_name,
+        last=message.from_user.last_name or "",
+        username=f"@{message.from_user.username}" if message.from_user.username else "None",
+        mention=message.from_user.mention,
+        id=message.from_user.id
+    )
+    
+    await message.reply_text(
+        text=text,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=True
+    )
+    
+    return False
+
+def encode(string):
+    """Encode string to base64"""
     string_bytes = string.encode("ascii")
     base64_bytes = base64.urlsafe_b64encode(string_bytes)
-    base64_string = (base64_bytes.decode("ascii")).strip("=")
-    return base64_string
+    return base64_bytes.decode("ascii").strip("=")
 
-async def decode(base64_string):
-    base64_string = base64_string.strip("=") # links generated before this commit will be having = sign, hence striping them to handle padding errors.
+def decode(base64_string):
+    """Decode base64 string"""
+    base64_string = base64_string.strip("=")
     base64_bytes = (base64_string + "=" * (-len(base64_string) % 4)).encode("ascii")
     string_bytes = base64.urlsafe_b64decode(base64_bytes) 
-    string = string_bytes.decode("ascii")
-    return string
+    return string_bytes.decode("ascii")
 
 async def get_messages(client, message_ids):
+    """Get multiple messages"""
     messages = []
     total_messages = 0
     while total_messages != len(message_ids):
-        temb_ids = message_ids[total_messages:total_messages+200]
+        temp_ids = message_ids[total_messages:total_messages+200]
         try:
             msgs = await client.get_messages(
                 chat_id=client.db_channel.id,
-                message_ids=temb_ids
+                message_ids=temp_ids
             )
+            total_messages += len(temp_ids)
+            messages.extend(msgs)
         except FloodWait as e:
-            await asyncio.sleep(e.x)
-            msgs = await client.get_messages(
-                chat_id=client.db_channel.id,
-                message_ids=temb_ids
-            )
-        except:
+            await asyncio.sleep(e.value)
+        except Exception as e:
+            LOGGER(__name__).error(e)
             pass
-        total_messages += len(temb_ids)
-        messages.extend(msgs)
     return messages
 
-async def get_message_id(client, message):
-    if message.forward_from_chat:
-        if message.forward_from_chat.id == client.db_channel.id:
-            return message.forward_from_message_id
-        else:
-            return 0
-    elif message.forward_sender_name:
-        return 0
-    elif message.text:
-        pattern = "https://t.me/(?:c/)?(.*)/(\d+)"
-        matches = re.match(pattern,message.text)
-        if not matches:
-            return 0
-        channel_id = matches.group(1)
-        msg_id = int(matches.group(2))
-        if channel_id.isdigit():
-            if f"-100{channel_id}" == str(client.db_channel.id):
-                return msg_id
-        else:
-            if channel_id == client.db_channel.username:
-                return msg_id
-    else:
-        return 0
-
 def get_readable_time(seconds: int) -> str:
-    count = 0
-    up_time = ""
-    time_list = []
-    time_suffix_list = ["s", "m", "h", "days"]
-    while count < 4:
-        count += 1
-        remainder, result = divmod(seconds, 60) if count < 3 else divmod(seconds, 24)
-        if seconds == 0 and remainder == 0:
-            break
-        time_list.append(int(result))
-        seconds = int(remainder)
-    hmm = len(time_list)
-    for x in range(hmm):
-        time_list[x] = str(time_list[x]) + time_suffix_list[x]
-    if len(time_list) == 4:
-        up_time += f"{time_list.pop()}, "
-    time_list.reverse()
-    up_time += ":".join(time_list)
-    return up_time
+    """Convert seconds to readable time format"""
+    result = ''
+    (days, remainder) = divmod(seconds, 86400)
+    days = int(days)
+    if days != 0:
+        result += f'{days}d '
+    (hours, remainder) = divmod(remainder, 3600)
+    hours = int(hours)
+    if hours != 0:
+        result += f'{hours}h '
+    (minutes, seconds) = divmod(remainder, 60)
+    minutes = int(minutes)
+    if minutes != 0:
+        result += f'{minutes}m '
+    seconds = int(seconds)
+    result += f'{seconds}s'
+    return result
 
-async def delete_file(messages, client, process):
-    await asyncio.sleep(AUTO_DELETE_TIME)
-    for msg in messages:
-        try:
-            await client.delete_messages(chat_id=msg.chat.id, message_ids=[msg.id])
-        except Exception as e:
-            await asyncio.sleep(e.x)
-            print(f"The attempt to delete the media {msg.id} was unsuccessful: {e}")
+def is_admin_filter():
+    """Filter to check if user is admin"""
+    async def func(flt, client, message: Message):
+        return message.from_user.id in ADMINS
+    return filters.create(func)
+```
 
-    await process.edit_text(AUTO_DEL_SUCCESS_MSG)
+---
 
+**Just copy this entire code block and save it as `helper_func.py` in your project root!** 
 
-subscribed = filters.create(is_subscribed)
+Your structure should be:
+```
+Your-Project/
+├── helper_func.py  ← THIS FILE
+├── bot.py
+├── config.py
+├── requirements.txt
+├── Procfile
+├── runtime.txt
+├── nixpacks.toml
+├── database/
+│   ├── __init__.py
+│   └── database.py
+└── plugins/
+    ├── __init__.py
+    ├── start.py
+    ├── channel_post.py
+    ├── admin_panel.py
+    ├── batch.py
+    └── broadcast.py
